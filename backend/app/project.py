@@ -30,6 +30,7 @@ STAGE_STATES = {
 }
 
 ALL_STAGES = [
+    Stage.PROFILE,
     Stage.SPECIAL_CHARS,
     Stage.MISSINGNESS,
     Stage.UNITS,

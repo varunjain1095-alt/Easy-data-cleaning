@@ -105,7 +105,7 @@ def format_candidates(df: pl.DataFrame) -> list[dict]:
 
 def eval_invalid_rule(df: pl.DataFrame, col: str, rule: dict) -> dict:
     """Evaluate an invalid-value rule; returns affected rows for preview/treatment."""
-    kind = rule["type"]
+    kind = rule.get("type")
     s = df[col]
     if kind == "range":
         num = s.cast(pl.Float64, strict=False)
@@ -116,12 +116,45 @@ def eval_invalid_rule(df: pl.DataFrame, col: str, rule: dict) -> dict:
             mask = mask | (num > rule["max"])
         mask = mask & num.is_not_null()
     elif kind == "not_in":
+        if not rule.get("values"):
+            raise ValueError("not_in rule requires 'values'")
         allowed = {str(v) for v in rule["values"]}
         mask = ~s.cast(pl.String).is_in(list(allowed)) & s.is_not_null()
     elif kind == "unparseable_date":
         mask = s.cast(pl.String).str.to_date(rule.get("format"), strict=False).is_null() & s.is_not_null()
     elif kind == "unparseable_numeric":
         mask = s.cast(pl.String).str.strip_chars().cast(pl.Float64, strict=False).is_null() & s.is_not_null()
+    elif kind == "contains":
+        text = str(rule.get("text", ""))
+        if not text:
+            raise ValueError("contains rule requires 'text'")
+        mask = ~s.cast(pl.String).str.contains(text, literal=True) & s.is_not_null()
+    elif kind == "cmp":
+        vk = rule.get("value_kind", "number")
+        lhs = s.cast(pl.String).str.to_datetime(strict=False) if vk == "date" else s.cast(pl.Float64, strict=False)
+        if rule.get("other_column"):
+            if rule["other_column"] not in df.columns:
+                raise ValueError(f"column {rule['other_column']!r} not found")
+            other = df[rule["other_column"]]
+            rhs = other.cast(pl.String).str.to_datetime(strict=False) if vk == "date" else other.cast(pl.Float64, strict=False)
+        else:
+            raw = rule.get("value")
+            if raw is None or raw == "":
+                raise ValueError("cmp rule requires 'value' or 'other_column'")
+            rhs = datetime.fromisoformat(str(raw)) if vk == "date" else float(raw)
+        cmps = {"gt": lhs > rhs, "ge": lhs >= rhs, "lt": lhs < rhs, "le": lhs <= rhs, "eq": lhs == rhs, "ne": lhs != rhs}
+        if rule.get("op") not in cmps:
+            raise ValueError(f"unknown comparison {rule.get('op')!r}")
+        mask = ~cmps[rule["op"]] & lhs.is_not_null()
+        if rule.get("other_column"):
+            mask = mask & rhs.is_not_null()
+    elif kind == "date_range":
+        parsed = s.cast(pl.String).str.to_datetime(strict=False)
+        mask = parsed.is_null() & s.is_not_null()
+        if rule.get("min"):
+            mask = mask | (parsed < datetime.fromisoformat(str(rule["min"])))
+        if rule.get("max"):
+            mask = mask | (parsed > datetime.fromisoformat(str(rule["max"])))
     else:
         raise ValueError(f"unknown rule {kind}")
     bad = df.filter(mask)

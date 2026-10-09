@@ -1,6 +1,7 @@
 import random
 import re
 import time
+from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable
 
@@ -13,6 +14,7 @@ from .security import new_id
 class Stage(str):
     """Workflow stages used for dependency invalidation (architecture section 15)."""
 
+    PROFILE = "profile"
     SPECIAL_CHARS = "special_chars"
     MISSINGNESS = "missingness"
     UNITS = "units"
@@ -414,6 +416,28 @@ def _op_mask_values(df: pl.DataFrame, params: dict) -> pl.DataFrame:
     elif kind == "unparseable_numeric":
         parsed = pl.col(col).cast(pl.String).str.strip_chars().cast(pl.Float64, strict=False)
         mask = parsed.is_null() & pl.col(col).is_not_null()
+    elif kind == "contains":
+        mask = ~pl.col(col).cast(pl.String).str.contains(str(rule["text"]), literal=True) & pl.col(col).is_not_null()
+    elif kind == "cmp":
+        vk = rule.get("value_kind", "number")
+        src = pl.col(col)
+        lhs = src.cast(pl.String).str.to_datetime(strict=False) if vk == "date" else src.cast(pl.Float64, strict=False)
+        if rule.get("other_column"):
+            o = pl.col(rule["other_column"])
+            rhs = o.cast(pl.String).str.to_datetime(strict=False) if vk == "date" else o.cast(pl.Float64, strict=False)
+        else:
+            rhs = datetime.fromisoformat(str(rule["value"])) if vk == "date" else float(rule["value"])
+        cmps = {"gt": lhs > rhs, "ge": lhs >= rhs, "lt": lhs < rhs, "le": lhs <= rhs, "eq": lhs == rhs, "ne": lhs != rhs}
+        mask = ~cmps[rule["op"]] & lhs.is_not_null()
+        if rule.get("other_column"):
+            mask = mask & rhs.is_not_null()
+    elif kind == "date_range":
+        parsed = pl.col(col).cast(pl.String).str.to_datetime(strict=False)
+        mask = parsed.is_null() & pl.col(col).is_not_null()
+        if rule.get("min"):
+            mask = mask | (parsed < datetime.fromisoformat(str(rule["min"])))
+        if rule.get("max"):
+            mask = mask | (parsed > datetime.fromisoformat(str(rule["max"])))
     else:
         raise ValueError(f"Unknown rule type: {kind}")
     return df.with_columns(

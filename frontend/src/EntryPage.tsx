@@ -1,8 +1,7 @@
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import {
   CheckCircle2Icon,
   ChevronRightIcon,
-  ClockIcon,
   FileOutputIcon,
   FileSpreadsheetIcon,
   FileUpIcon,
@@ -18,10 +17,9 @@ export interface EntryPageProps {
   progress: string;
   error: string | null;
   fileName: string | null;
-  expiresIn: number | null;
 }
 
-export function EntryHeader({ expiresIn }: { expiresIn: number | null }) {
+export function EntryHeader({ trailing }: { trailing?: ReactNode }) {
   return (
     <header className="entry-header">
       <div className="entry-inner entry-header-inner">
@@ -29,24 +27,19 @@ export function EntryHeader({ expiresIn }: { expiresIn: number | null }) {
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
           <span className="brand-name">Quick Data Cleaner</span>
         </div>
-        {expiresIn !== null && (
-          <span className="session-pill">
-            <ClockIcon aria-hidden="true" />
-            Session expires in {Math.floor(expiresIn / 60)}:{String(expiresIn % 60).padStart(2, "0")}
-          </span>
-        )}
+        {trailing}
       </div>
     </header>
   );
 }
 
-export default function EntryPage({ onFile, busy, progress, error, fileName, expiresIn }: EntryPageProps) {
+export default function EntryPage({ onFile, busy, progress, error, fileName }: EntryPageProps) {
   return (
     <div className="entry-page">
       <div className="grid-decor grid-tr" aria-hidden="true" />
       <div className="grid-decor grid-bl" aria-hidden="true" />
 
-      <EntryHeader expiresIn={expiresIn} />
+      <EntryHeader />
 
       <main className="entry-inner hero">
         <section className="intro">
@@ -61,7 +54,6 @@ export default function EntryPage({ onFile, busy, progress, error, fileName, exp
             Export a reproducible workflow.
           </p>
           <WorkflowSteps />
-          <p className="workflow-text">Upload → Review → Clean → Validate → Export</p>
         </section>
 
         <UploadCard onFile={onFile} busy={busy} progress={progress} error={error} fileName={fileName} />
@@ -96,7 +88,7 @@ function WorkflowSteps() {
   );
 }
 
-function UploadCard({ onFile, busy, progress, error, fileName }: Omit<EntryPageProps, "expiresIn">) {
+function UploadCard({ onFile, busy, progress, error, fileName }: EntryPageProps) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 

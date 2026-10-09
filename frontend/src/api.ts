@@ -236,6 +236,7 @@ export interface DupConfig {
   columns: string[];
   blocking_columns: string[];
   threshold: number;
+  tag?: string;
 }
 
 // ---- Phase 3A: export + validation ----

@@ -11,14 +11,27 @@ import {
   startExport,
 } from "./api";
 
-const FORMATS = [
-  { v: "csv", label: "CSV" },
-  { v: "xlsx", label: "XLSX" },
-  { v: "report", label: "HTML report" },
-  { v: "json", label: "JSON config" },
-  { v: "script", label: "Python script" },
-  { v: "flagged", label: "Flagged records" },
-  { v: "zip", label: "ZIP bundle" },
+const FORMAT_GROUPS = [
+  {
+    title: "Export cleaned data",
+    formats: [
+      { v: "csv", label: "CSV" },
+      { v: "xlsx", label: "XLSX" },
+      { v: "flagged", label: "Flagged records" },
+      { v: "zip", label: "ZIP bundle" },
+    ],
+  },
+  {
+    title: "Export cleaning report",
+    formats: [{ v: "report", label: "HTML report" }],
+  },
+  {
+    title: "Export workflow",
+    formats: [
+      { v: "json", label: "JSON config" },
+      { v: "script", label: "Python script" },
+    ],
+  },
 ];
 
 export default function ExportPanel({ project }: { project: Project }) {
@@ -113,15 +126,20 @@ export default function ExportPanel({ project }: { project: Project }) {
       )}
 
       <div className="ws-export-section">
-        <div className="ws-formats">
-          {FORMATS.map((f) => (
-            <label key={f.v} className="ws-check">
-              <input type="checkbox" checked={formats.has(f.v)}
-                onChange={() => toggle(formats, f.v, setFormats)} />
-              {f.label}
-            </label>
-          ))}
-        </div>
+        {FORMAT_GROUPS.map((g) => (
+          <div key={g.title} className="ws-export-group">
+            <div className="ws-export-group-label">{g.title}</div>
+            <div className="ws-formats">
+              {g.formats.map((f) => (
+                <label key={f.v} className="ws-check">
+                  <input type="checkbox" checked={formats.has(f.v)}
+                    onChange={() => toggle(formats, f.v, setFormats)} />
+                  {f.label}
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
         <div className="ws-export-actions">
           <button className="ws-btn ws-btn-primary" onClick={runExport}
             disabled={formats.size === 0 || (warnings.length > 0 && !ack)}>

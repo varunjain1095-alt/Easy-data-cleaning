@@ -11,11 +11,10 @@ import {
   reparseItem,
   upload,
 } from "./api";
-import { ArrowLeftIcon, FileTextIcon, Table2Icon, UploadIcon } from "lucide-react";
+import { ALargeSmallIcon, ArrowLeftIcon, FileTextIcon, MinusIcon, PlusIcon, Table2Icon, UploadIcon, ZoomInIcon } from "lucide-react";
 import EntryPage, { EntryHeader } from "./EntryPage";
 import CleaningPanel from "./CleaningPanel";
 import ExportPanel from "./ExportPanel";
-import { sessionInfo } from "./api";
 
 type Phase = "upload" | "processing" | "checklist";
 
@@ -28,8 +27,23 @@ export default function App() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
-  const [expiresAt, setExpiresAt] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [zoom, setZoom] = useState(() => {
+    const stored = Number(localStorage.getItem("qdc-zoom"));
+    return stored >= 0.75 && stored <= 1.5 ? stored : 1;
+  });
+  const [fontScale, setFontScale] = useState(() => {
+    const stored = Number(localStorage.getItem("qdc-font-scale"));
+    return stored >= 0.9 && stored <= 1.4 ? stored : 1;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("qdc-zoom", String(zoom));
+  }, [zoom]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--ws-fontscale", String(fontScale));
+    localStorage.setItem("qdc-font-scale", String(fontScale));
+  }, [fontScale]);
 
   useEffect(() => {
     ensureSession()
@@ -41,21 +55,6 @@ export default function App() {
   useEffect(() => {
     if (project && phase === "upload") setPhase("checklist");
   }, [project, phase]);
-
-  // Session-expiry countdown (1-hour sliding window; server sync + 1s local tick).
-  useEffect(() => {
-    const sync = () =>
-      sessionInfo()
-        .then((s) => setExpiresAt(s.expires_at))
-        .catch(() => setExpiresAt(null));
-    sync();
-    const poll = setInterval(sync, 30_000);
-    const tick = setInterval(() => setNow(Date.now()), 1_000);
-    return () => { clearInterval(poll); clearInterval(tick); };
-  }, [ready]);
-
-  const expiresIn =
-    expiresAt !== null ? Math.max(0, Math.floor(expiresAt - now / 1000)) : null;
 
   const onFile = useCallback(async (file: File) => {
     setError(null);
@@ -88,7 +87,6 @@ export default function App() {
         progress={progress}
         error={error}
         fileName={fileName}
-        expiresIn={expiresIn}
       />
     );
   }
@@ -96,8 +94,13 @@ export default function App() {
   const selectedItem = project?.items.find((i) => i.item_id === selected) ?? null;
 
   return (
-    <div className="ws">
-      <EntryHeader expiresIn={expiresIn} />
+    <div className="ws" style={{ zoom }}>
+      <EntryHeader trailing={
+        <div className="header-controls">
+          <FontScaleControl scale={fontScale} onChange={setFontScale} />
+          <ZoomControl zoom={zoom} onChange={setZoom} />
+        </div>
+      } />
       {error && (
         <div className="entry-inner"><div className="ws-error" role="alert">{error}</div></div>
       )}
@@ -142,6 +145,46 @@ export default function App() {
   );
 }
 
+function FontScaleControl({ scale, onChange }: { scale: number; onChange: (s: number) => void }) {
+  const step = (d: number) =>
+    onChange(Math.min(1.4, Math.max(0.9, Math.round((scale + d) * 20) / 20)));
+  return (
+    <div className="zoom-control" role="group" aria-label="Text size">
+      <ALargeSmallIcon className="control-hint" aria-hidden="true" />
+      <button type="button" className="zoom-btn" onClick={() => step(-0.05)} disabled={scale <= 0.9} aria-label="Decrease text size">
+        <MinusIcon aria-hidden="true" />
+      </button>
+      <button type="button" className="zoom-btn zoom-level" onClick={() => onChange(1)}
+        aria-label={`Text size ${Math.round(scale * 100)}%, click to reset`} title="Reset text size">
+        {Math.round(scale * 100)}%
+      </button>
+      <button type="button" className="zoom-btn" onClick={() => step(0.05)} disabled={scale >= 1.4} aria-label="Increase text size">
+        <PlusIcon aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function ZoomControl({ zoom, onChange }: { zoom: number; onChange: (z: number) => void }) {
+  const step = (d: number) =>
+    onChange(Math.min(1.5, Math.max(0.75, Math.round((zoom + d) * 10) / 10)));
+  return (
+    <div className="zoom-control" role="group" aria-label="Page zoom">
+      <ZoomInIcon className="control-hint" aria-hidden="true" />
+      <button type="button" className="zoom-btn" onClick={() => step(-0.1)} disabled={zoom <= 0.75} aria-label="Zoom out">
+        <MinusIcon aria-hidden="true" />
+      </button>
+      <button type="button" className="zoom-btn zoom-level" onClick={() => onChange(1)}
+        aria-label={`Zoom ${Math.round(zoom * 100)}%, click to reset`} title="Reset zoom">
+        {Math.round(zoom * 100)}%
+      </button>
+      <button type="button" className="zoom-btn" onClick={() => step(0.1)} disabled={zoom >= 1.5} aria-label="Zoom in">
+        <PlusIcon aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 function Checklist({
   project,
   selected,
@@ -172,7 +215,7 @@ function Checklist({
             className={`${selected === item.item_id ? "selected" : ""} ${item.status === "rejected" ? "rejected" : ""}`}
             onClick={() => item.status !== "rejected" && onSelect(item.item_id)}
           >
-            <strong>{item.name}</strong>
+            <strong title={item.name}>{item.name}</strong>
             <span className={`badge ${item.status}`}>{item.status.replace(/_/g, " ")}</span>
             <span className="muted">
               {item.row_count != null && `${item.row_count.toLocaleString()} rows · ${item.column_count} cols`}
@@ -266,7 +309,7 @@ function PreviewCard({
           </div>
         </div>
       )}
-      <div className="table-wrap ws-table">
+      <div className="table-wrap ws-table ws-datagrid">
         <table>
           <thead>
             <tr>
@@ -282,7 +325,9 @@ function PreviewCard({
             {preview.rows.map((row, i) => (
               <tr key={i}>
                 {preview.columns.map((c) => (
-                  <td key={c.name}>{row[c.name] == null ? "" : String(row[c.name])}</td>
+                  <td key={c.name} title={row[c.name] == null ? undefined : String(row[c.name])}>
+                    {row[c.name] == null ? "" : String(row[c.name])}
+                  </td>
                 ))}
               </tr>
             ))}

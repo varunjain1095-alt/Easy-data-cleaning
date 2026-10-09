@@ -19,6 +19,7 @@ Requires: polars (and openpyxl/python-calamine for Excel inputs).
 """
 import sys
 import random
+from datetime import datetime
 import polars as pl
 
 ROW_ID = "__qdc_row_id"
@@ -187,6 +188,26 @@ def _emit_mask_values(p: dict) -> list[str]:
         mask = f"~pl.col({col!r}).cast(pl.String).is_in({[str(v) for v in rule['values']]!r}) & pl.col({col!r}).is_not_null()"
     elif t == "unparseable_date":
         mask = f"pl.col({col!r}).cast(pl.String).str.to_date({rule.get('format')!r}, strict=False).is_null() & pl.col({col!r}).is_not_null()"
+    elif t == "contains":
+        mask = f"~pl.col({col!r}).cast(pl.String).str.contains({str(rule['text'])!r}, literal=True) & pl.col({col!r}).is_not_null()"
+    elif t == "cmp":
+        vk = rule.get("value_kind", "number")
+        parse = f"pl.col({col!r}).cast(pl.String).str.to_datetime(strict=False)" if vk == "date" else f"pl.col({col!r}).cast(pl.Float64, strict=False)"
+        sym = {"gt": ">", "ge": ">=", "lt": "<", "le": "<=", "eq": "==", "ne": "!="}[rule["op"]]
+        if rule.get("other_column"):
+            oc = rule["other_column"]
+            rparse = f"pl.col({oc!r}).cast(pl.String).str.to_datetime(strict=False)" if vk == "date" else f"pl.col({oc!r}).cast(pl.Float64, strict=False)"
+            mask = f"~({parse} {sym} {rparse}) & {parse}.is_not_null() & {rparse}.is_not_null()"
+        else:
+            rhs = f"datetime.fromisoformat({str(rule['value'])!r})" if vk == "date" else repr(float(rule["value"]))
+            mask = f"~({parse} {sym} {rhs}) & {parse}.is_not_null()"
+    elif t == "date_range":
+        conds = [f"parsed.is_null() & pl.col({col!r}).is_not_null()"]
+        if rule.get("min"):
+            conds.append(f"parsed < datetime.fromisoformat({str(rule['min'])!r})")
+        if rule.get("max"):
+            conds.append(f"parsed > datetime.fromisoformat({str(rule['max'])!r})")
+        mask = f"(lambda parsed: {' | '.join(conds)})(pl.col({col!r}).cast(pl.String).str.to_datetime(strict=False))"
     else:
         mask = f"pl.col({col!r}).cast(pl.String).str.strip_chars().cast(pl.Float64, strict=False).is_null() & pl.col({col!r}).is_not_null()"
     return [f"df = df.with_columns(pl.when({mask}).then(pl.lit(None)).otherwise(pl.col({col!r})).alias({col!r}))"]

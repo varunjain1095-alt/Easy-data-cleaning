@@ -20,8 +20,8 @@ import {
   assessPattern,
   assessUnits,
   declareKey,
+  type DupConfig,
   dupAnalyze,
-  dupEstimate,
   dupResolve,
   dupResult,
   getHistory,
@@ -40,6 +40,7 @@ import {
 } from "./api";
 
 const STAGES: { key: string; label: string }[] = [
+  { key: "profile", label: "Data profile" },
   { key: "special_chars", label: "Special characters" },
   { key: "missingness", label: "Missing values" },
   { key: "units", label: "Units & scales" },
@@ -61,7 +62,7 @@ export default function CleaningPanel({
   onChanged: () => void;
   refresh?: number;
 }) {
-  const [stage, setStage] = useState<string>("missingness");
+  const [stage, setStage] = useState<string>("profile");
   const [states, setStates] = useState(item.stage_states);
   const [msg, setMsg] = useState<string | null>(null);
   const [hist, setHist] = useState<{ can_undo: boolean; can_redo: boolean }>({ can_undo: false, can_redo: false });
@@ -125,6 +126,7 @@ export default function CleaningPanel({
         </button>
       </div>
       <p className="stage-intro ws-info">{STAGE_INTROS[stage]}</p>
+      {stage === "profile" && <ProfilePanel item={item} refresh={refresh} />}
       {stage === "special_chars" && <SpecialChars item={item} onChanged={changed} refresh={refresh} />}
       {stage === "missingness" && <Missingness item={item} onChanged={changed} refresh={refresh} hist={hist} />}
       {stage === "types" && <Types item={item} onChanged={changed} refresh={refresh} />}
@@ -268,7 +270,80 @@ function Highlighted({ text, chars }: { text: string; chars: string[] }) {
   );
 }
 
+const SEV_LABEL: Record<string, string> = {
+  none: "None", low: "Low", moderate: "Moderate", high: "High", critical: "Critical",
+};
+
+function ProfilePanel({ item, refresh }: { item: ProjectItem; refresh: number }) {
+  const [data, setData] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setData(null);
+    setErr(null);
+    assess(item.item_id, "profile")
+      .then(setData)
+      .catch((e) => setErr(e instanceof ApiError ? e.message : String(e)));
+  }, [item.item_id, refresh]);
+
+  if (err) return <div className="ws-error">{err}</div>;
+  if (!data) return <p className="muted">Profiling columns…</p>;
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Column</th>
+            <th>Missing</th>
+            <th>Type</th>
+            <th>Numeric-like text</th>
+            <th>Unique</th>
+            <th>Repeated values</th>
+            <th>Unique key</th>
+            <th>Severity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.columns.map((c: any) => (
+            <tr key={c.column}>
+              <td><strong>{c.column}</strong></td>
+              <td>
+                {c.missing_count > 0
+                  ? <><span className="missing-val">{c.missing_count.toLocaleString()}</span> <span className="muted">({c.missing_pct}%)</span></>
+                  : <span className="clean-status">0</span>}
+              </td>
+              <td className="muted">{c.dtype}</td>
+              <td>{c.suspect_numeric_object
+                ? <span className="badge sev-moderate" title="Over 90% of values look numeric but the column is stored as text">yes</span>
+                : <span className="muted">no</span>}</td>
+              <td>{c.unique_count.toLocaleString()}</td>
+              <td>
+                {c.has_repeats
+                  ? <>{c.repeated_count.toLocaleString()} <span className="muted">({c.repeated_pct}%)</span></>
+                  : <span className="muted">none</span>}
+              </td>
+              <td>{c.is_unique_key
+                ? <span className="clean-status">yes</span>
+                : <span className="muted">no</span>}</td>
+              <td>
+                <span
+                  className={`badge sev-${c.severity}`}
+                  title={c.reasons.length ? c.reasons.join("; ") : "No missing values or type inconsistencies"}
+                >
+                  {SEV_LABEL[c.severity] ?? c.severity}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const STAGE_INTROS: Record<string, string> = {
+  profile: "A read-only audit of every column before any cleaning: missing values, dtype, uniqueness, repeated values, whether a column could be a key, and a severity rating driven by missing data and type inconsistency. Nothing here changes your data; use it to decide where to start.",
   special_chars: "Finds symbols and odd punctuation in column names and cell contents (e.g. @, #, or spaces). For each finding you choose: keep it, strip it, replace it, or blank the cell. Nothing changes until you click Apply.",
   missingness: "Shows how many cells in each column are empty or marked as missing (e.g. NA, null, -200). 'show rows' lists the actual rows. Pick a treatment per column, fill with the average, copy a neighbouring value, drop them, or leave them as they are.",
   types: "Suggests what each column really is (number, date, time, text) based on its contents, and converts it when you click Convert. 'Compatible' is how many values fit; 'Incompatible' shows the values that would become empty.",
@@ -807,44 +882,186 @@ function Normalize({ item, onChanged, refresh = 0 }: { item: ProjectItem; onChan
 // Basic (names + formats) and invalid values & structures
 // ---------------------------------------------------------------------------
 
+function ColumnNamesEditor({
+  item, issues, proposed, collisions, existing, onDone,
+}: {
+  item: ProjectItem;
+  issues: { column: string; problems: string[] }[];
+  proposed: Record<string, string>;
+  collisions: Record<string, string[]>;
+  existing: string[];
+  onDone: () => void;
+}) {
+  const resolved = useMemo(() => {
+    const r: Record<string, string> = {};
+    const counts: Record<string, number> = {};
+    for (const [orig, prop] of Object.entries(proposed)) {
+      counts[prop] = (counts[prop] || 0) + 1;
+      r[orig] = counts[prop] > 1 ? `${prop}_${counts[prop]}` : prop;
+    }
+    return r;
+  }, [proposed]);
+
+  const [rows, setRows] = useState<Record<string, { include: boolean; name: string }>>(() => {
+    const r: Record<string, { include: boolean; name: string }> = {};
+    for (const i of issues) r[i.column] = { include: true, name: resolved[i.column] ?? i.column };
+    return r;
+  });
+
+  const mapping: Record<string, string> = {};
+  const chosen: string[] = [];
+  for (const i of issues) {
+    const st = rows[i.column];
+    const name = st?.name.trim();
+    if (st?.include && name && name !== i.column) {
+      mapping[i.column] = name;
+      chosen.push(name);
+    }
+  }
+  const dupes = new Set(chosen.filter((n, i) => chosen.indexOf(n) !== i));
+  const conflicts = new Set(chosen.filter((n) => existing.includes(n) && !(n in mapping)));
+  const hasEmpty = issues.some((i) => rows[i.column]?.include && !rows[i.column].name.trim());
+  const blocked = hasEmpty || dupes.size > 0 || conflicts.size > 0 || chosen.length === 0;
+
+  return (
+    <div>
+      {issues.map((i) => {
+        const st = rows[i.column] ?? { include: true, name: resolved[i.column] ?? i.column };
+        const bad = st.include && (!st.name.trim() || dupes.has(st.name.trim()) || conflicts.has(st.name.trim()));
+        return (
+          <div key={i.column} className="ws-check" style={{ marginBottom: 6 }}>
+            <input
+              type="checkbox"
+              checked={st.include}
+              onChange={(e) => setRows({ ...rows, [i.column]: { ...st, include: e.target.checked } })}
+              aria-label={`Rename ${i.column}`}
+            />
+            <span className="muted">“{i.column}” →</span>
+            <input
+              type="text"
+              value={st.name}
+              disabled={!st.include}
+              onChange={(e) => setRows({ ...rows, [i.column]: { ...st, name: e.target.value } })}
+              style={bad ? { borderColor: "var(--qdc-danger)" } : undefined}
+              aria-label={`New name for ${i.column}`}
+            />
+            <span className="muted" style={{ fontSize: "0.85rem" }}>({i.problems.join(", ")})</span>
+          </div>
+        );
+      })}
+      {Object.keys(collisions).length > 0 && (
+        <div className="notice">Collisions resolved with suffixes: {JSON.stringify(collisions)}</div>
+      )}
+      {hasEmpty && <div className="notice">Ticked columns need a non-empty name.</div>}
+      {dupes.size > 0 && <div className="notice">Duplicate new names: {[...dupes].join(", ")}</div>}
+      {conflicts.size > 0 && <div className="notice">Name clashes with an existing column: {[...conflicts].join(", ")}</div>}
+      {blocked ? (
+        <span className="muted" style={{ display: "inline-block", marginTop: 6 }}>
+          {chosen.length === 0 ? "Nothing to rename." : "Fix the issues above to apply."}
+        </span>
+      ) : (
+        <ApplyBar
+          item={item}
+          op={{ op_type: "rename_columns", stage: "column_names", params: { mapping }, target_columns: Object.keys(mapping) }}
+          label="Apply names"
+          onDone={onDone}
+        />
+      )}
+    </div>
+  );
+}
+
+const RULE_OPTIONS: Record<string, string> = {
+  cmp: "comparison",
+  not_in: "allowed values",
+  contains: "must contain",
+  unparseable_date: "unparseable date",
+  unparseable_numeric: "unparseable number",
+};
+
+const CMP_OPS: Record<string, string> = {
+  gt: ">", ge: "≥", lt: "<", le: "≤", eq: "=", ne: "≠", between: "between",
+};
+
+function valueKindOf(dtype: string): "date" | "number" {
+  return /date|time/i.test(dtype) ? "date" : "number";
+}
+
+function rulesForMeta(meta?: { dtype: string; unique: number }): string[] {
+  if (!meta) return [];
+  if (meta.unique === 2) return ["not_in"];
+  if (/date|time/i.test(meta.dtype)) return ["cmp", "not_in"];
+  if (/int|float|decimal|boolean/i.test(meta.dtype)) return ["cmp", "not_in"];
+  return ["not_in", "contains", "unparseable_date", "unparseable_numeric"];
+}
+
 function Basic({ item, onChanged, section, refresh = 0 }: { item: ProjectItem; onChanged: () => void; section: "names" | "invalid"; refresh?: number }) {
   const { data, error, reload } = useAssessment(item, "basic", [refresh]);
-  const [rule, setRule] = useState<{ col: string; type: string; min: string; max: string; values: string }>({
-    col: "", type: "range", min: "", max: "", values: "",
+  const { data: profileData } = useAssessment(item, "profile", [refresh]);
+  const [rule, setRule] = useState<{
+    col: string; type: string; min: string; max: string; values: string; text: string;
+    op: string; other: string; value: string;
+  }>({
+    col: "", type: "", min: "", max: "", values: "", text: "", op: "gt", other: "", value: "",
   });
   const [ruleResult, setRuleResult] = useState<any>(null);
   const [colNames, setColNames] = useState<string[]>([]);
+  const [samples, setSamples] = useState<Record<string, string[]>>({});
   useEffect(() => {
-    getPreview(item.item_id).then((p) => setColNames(p.columns.map((c) => c.name))).catch(() => null);
+    getPreview(item.item_id).then((p) => {
+      setColNames(p.columns.map((c) => c.name));
+      const s: Record<string, string[]> = {};
+      for (const c of p.columns) {
+        const seen = new Set<string>();
+        for (const row of p.rows) {
+          const v = row[c.name];
+          if (v != null && v !== "") seen.add(String(v));
+          if (seen.size > 2) break;
+        }
+        s[c.name] = [...seen];
+      }
+      setSamples(s);
+    }).catch(() => null);
   }, [item.item_id, refresh]);
+
+  const colMeta = useMemo(() => {
+    const m: Record<string, { dtype: string; unique: number }> = {};
+    for (const c of (profileData?.columns ?? []) as any[]) m[c.column] = { dtype: c.dtype, unique: c.unique_count };
+    return m;
+  }, [profileData]);
+
+  const specificRules = rule.col ? rulesForMeta(colMeta[rule.col]) : [];
+  const allowedRules = specificRules.length ? specificRules : Object.keys(RULE_OPTIONS);
+  const onPickColumn = (col: string) => {
+    const opts = rulesForMeta(colMeta[col]);
+    const next = { ...rule, col, type: opts.includes(rule.type) ? rule.type : (opts[0] ?? rule.type) };
+    if (colMeta[col]?.unique === 2) next.values = (samples[col] ?? []).join(", ");
+    setRule(next);
+    setRuleResult(null);
+  };
+  const vk = valueKindOf(colMeta[rule.col]?.dtype ?? "");
+  const peerCols = colNames.filter((c) => c !== rule.col && valueKindOf(colMeta[c]?.dtype ?? "") === vk);
+  const canEvaluate = !!rule.col && !!rule.type && (
+    rule.type === "cmp" ? (rule.op === "between" ? rule.min !== "" || rule.max !== "" : rule.other !== "" || rule.value !== "") :
+    rule.type === "not_in" ? rule.values.trim() !== "" :
+    rule.type === "contains" ? rule.text !== "" : true
+  );
   if (error) return <div className="error">{error}</div>;
   if (!data) return <p>Assessing…</p>;
 
   if (section === "names") {
     const cn = data.column_names;
-    const resolved: Record<string, string> = {};
-    const counts: Record<string, number> = {};
-    for (const [orig, prop] of Object.entries(cn.proposed_mapping as Record<string, string>)) {
-      counts[prop] = (counts[prop] || 0) + 1;
-      resolved[orig] = counts[prop] > 1 ? `${prop}_${counts[prop]}` : prop;
-    }
     return (
       <div>
         <h2 style={{ fontSize: "0.95rem" }}>Column names</h2>
         {cn.issues.length === 0 && <p className="muted">No column-name issues.</p>}
-        {cn.issues.map((i: any) => (
-          <div key={i.column} className="muted">
-            “{i.column}” → <strong>{resolved[i.column]}</strong> ({i.problems.join(", ")})
-          </div>
-        ))}
-        {Object.keys(cn.collisions).length > 0 && (
-          <div className="notice">Collisions resolved with suffixes: {JSON.stringify(cn.collisions)}</div>
-        )}
         {cn.issues.length > 0 && (
-          <ApplyBar
+          <ColumnNamesEditor
             item={item}
-            op={{ op_type: "rename_columns", stage: "column_names", params: { mapping: resolved }, target_columns: Object.keys(resolved) }}
-            label="Apply names"
+            issues={cn.issues}
+            proposed={cn.proposed_mapping}
+            collisions={cn.collisions}
+            existing={colNames}
             onDone={() => { reload(); onChanged(); }}
           />
         )}
@@ -904,40 +1121,73 @@ function Basic({ item, onChanged, section, refresh = 0 }: { item: ProjectItem; o
       <div className="row" style={{ alignItems: "flex-end", marginBottom: 8 }}>
         <div>
           <label>Column</label>
-          <select value={rule.col} onChange={(e) => setRule({ ...rule, col: e.target.value })}>
+          <select value={rule.col} onChange={(e) => onPickColumn(e.target.value)}>
             <option value="">choose column…</option>
             {colNames.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
         <div>
           <label>Rule</label>
-          <select value={rule.type} onChange={(e) => setRule({ ...rule, type: e.target.value })}>
-            <option value="range">numeric range</option>
-            <option value="not_in">allowed values</option>
-            <option value="unparseable_date">unparseable date</option>
-            <option value="unparseable_numeric">unparseable number</option>
+          <select value={rule.type} onChange={(e) => setRule({ ...rule, type: e.target.value })} disabled={!rule.col}>
+            {allowedRules.map((t) => <option key={t} value={t}>{RULE_OPTIONS[t]}</option>)}
           </select>
         </div>
-        {rule.type === "range" && (
+        {rule.type === "cmp" && (
           <>
-            <div><label>Min</label><input type="text" value={rule.min} onChange={(e) => setRule({ ...rule, min: e.target.value })} /></div>
-            <div><label>Max</label><input type="text" value={rule.max} onChange={(e) => setRule({ ...rule, max: e.target.value })} /></div>
+            <div>
+              <label>Operator</label>
+              <select value={rule.op} onChange={(e) => setRule({ ...rule, op: e.target.value })}>
+                {Object.entries(CMP_OPS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+            {rule.op === "between" ? (
+              <>
+                <div><label>Min</label><input type={vk === "date" ? "date" : "text"} value={rule.min} onChange={(e) => setRule({ ...rule, min: e.target.value })} /></div>
+                <div><label>Max</label><input type={vk === "date" ? "date" : "text"} value={rule.max} onChange={(e) => setRule({ ...rule, max: e.target.value })} /></div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label>Compare to</label>
+                  <select value={rule.other} onChange={(e) => setRule({ ...rule, other: e.target.value })}>
+                    <option value="">a constant</option>
+                    {peerCols.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                {!rule.other && (
+                  <div><label>{vk === "date" ? "Date" : "Value"}</label>
+                    <input type={vk === "date" ? "date" : "text"} value={rule.value}
+                      onChange={(e) => setRule({ ...rule, value: e.target.value })} />
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
         {rule.type === "not_in" && (
           <div><label>Allowed (comma-sep)</label><input type="text" value={rule.values} onChange={(e) => setRule({ ...rule, values: e.target.value })} /></div>
         )}
+        {rule.type === "contains" && (
+          <div><label>Must contain</label><input type="text" value={rule.text} onChange={(e) => setRule({ ...rule, text: e.target.value })} placeholder='e.g. @' /></div>
+        )}
         <div>
           <button
-            disabled={!rule.col}
-            title={rule.col ? "Check how many values break this rule" : "Pick a column first"}
+            disabled={!canEvaluate}
+            title={canEvaluate ? "Check how many values break this rule" : "Pick a column and fill the rule"}
             onClick={() => {
               const r: any = { type: rule.type };
-              if (rule.type === "range") {
-                if (rule.min !== "") r.min = Number(rule.min);
-                if (rule.max !== "") r.max = Number(rule.max);
+              if (rule.type === "cmp" && rule.op === "between") {
+                r.type = vk === "date" ? "date_range" : "range";
+                if (rule.min !== "") r.min = vk === "date" ? rule.min : Number(rule.min);
+                if (rule.max !== "") r.max = vk === "date" ? rule.max : Number(rule.max);
+              } else if (rule.type === "cmp") {
+                r.op = rule.op;
+                r.value_kind = vk;
+                if (rule.other) r.other_column = rule.other;
+                else r.value = vk === "date" ? rule.value : Number(rule.value);
               }
               if (rule.type === "not_in") r.values = rule.values.split(",").map((v) => v.trim());
+              if (rule.type === "contains") r.text = rule.text;
               assessInvalid(item.item_id, rule.col, r).then(setRuleResult).catch((e) => setRuleResult({ error: e.message }));
             }}
           >
@@ -972,41 +1222,40 @@ function Basic({ item, onChanged, section, refresh = 0 }: { item: ProjectItem; o
 
 function Duplicates({ item, onChanged, refresh = 0 }: { item: ProjectItem; onChanged: () => void; refresh?: number }) {
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [cols, setCols] = useState<Set<string>>(new Set());
-  const [blocking, setBlocking] = useState<Set<string>>(new Set());
   const [threshold, setThreshold] = useState(100);
-  const [est, setEst] = useState<any>(null);
-  const [result, setResult] = useState<any>(null);
+  const [rowResult, setRowResult] = useState<any>(null);
+  const [keyCol, setKeyCol] = useState("");
+  const [keyResult, setKeyResult] = useState<any>(null);
   const [progress, setProgress] = useState("");
-  const [decisions, setDecisions] = useState<Record<number, { action: string; keep?: number }>>({});
+  const [decisions, setDecisions] = useState<Record<string, { action: string; keep?: number }>>({});
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    getPreview(item.item_id).then(setPreview);
-    dupResult(item.item_id).then(setResult).catch(() => null);
+    getPreview(item.item_id).then(setPreview).catch(() => null);
+    getKeyDeclaration(item.item_id).then((r) => {
+      const d = r.declared?.columns?.[0];
+      if (d) setKeyCol(d);
+    }).catch(() => null);
+    dupResult(item.item_id).then((r) => {
+      (r?.tag === "key" ? setKeyResult : setRowResult)(r);
+    }).catch(() => null);
   }, [item.item_id, refresh]);
 
-  const allCols = useMemo(() => preview?.columns.map((c) => c.name) ?? [], [preview]);
-  // Default: compare on all columns. User can untick selectively.
-  useEffect(() => { setCols(new Set(allCols)); setBlocking(new Set()); }, [allCols]);
-  const toggle = (set: Set<string>, v: string, fn: (s: Set<string>) => void) => {
-    const n = new Set(set);
-    n.has(v) ? n.delete(v) : n.add(v);
-    fn(n);
-  };
+  const allCols = preview?.columns.map((c) => c.name) ?? [];
 
-  const cfg = { columns: [...cols], blocking_columns: [...blocking], threshold };
-
-  const estimate = () =>
-    dupEstimate(item.item_id, cfg).then(setEst).catch((e) => setErr(e.message));
-
-  const analyze = async () => {
+  const run = async (cfg: DupConfig) => {
     setErr(null);
-    const { job_id } = await dupAnalyze(item.item_id, cfg);
-    await pollJob(job_id, (j) =>
-      setProgress(j.progress.total ? `${j.progress.message} (${j.progress.done}/${j.progress.total})` : j.progress.message || "Analyzing…"),
-    );
-    setResult(await dupResult(item.item_id));
+    setProgress("Starting…");
+    try {
+      const { job_id } = await dupAnalyze(item.item_id, cfg);
+      await pollJob(job_id, (j) =>
+        setProgress(j.progress.total ? `${j.progress.message} (${j.progress.done}/${j.progress.total})` : j.progress.message || "Analyzing…"),
+      );
+      const r = await dupResult(item.item_id);
+      (r?.tag === "key" ? setKeyResult : setRowResult)(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
     setProgress("");
   };
 
@@ -1018,100 +1267,76 @@ function Duplicates({ item, onChanged, refresh = 0 }: { item: ProjectItem; onCha
     }));
     await dupResolve(item.item_id, ds);
     setDecisions({});
-    setResult(null);
+    setRowResult(null);
+    setKeyResult(null);
     onChanged();
   };
 
+  const actionSelect = (members: number[], keep?: number) => (
+    <select
+      style={{ marginLeft: 8 }}
+      onChange={(e) => setDecisions({ ...decisions, [JSON.stringify(members)]: { action: e.target.value, keep } })}
+    >
+      <option value="">choose action…</option>
+      <option value="keep_all">keep all</option>
+      <option value="keep_first">keep first</option>
+      <option value="keep_last">keep last</option>
+      <option value="keep_most_complete">keep most complete</option>
+    </select>
+  );
+
+  const exactGroups = (res: any, label: string) => (
+    <div style={{ marginTop: 14 }}>
+      <h2 style={{ fontSize: "0.95rem" }}>
+        {res.summary.duplicate_groups} {label} · {res.summary.affected_rows} rows affected
+      </h2>
+      {res.groups.slice(0, 50).map((g: any, i: number) => (
+        <div key={i} className="muted" style={{ marginBottom: 6 }}>
+          Rows {g.members.join(", ")} (100% match) {actionSelect(g.members)}
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <div>
-      <div className="row" style={{ alignItems: "flex-start" }}>
-        <div>
-          <label>Comparison columns (required)</label>
-          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
-            Fields compared to decide whether two rows are duplicates.
-            {" "}<a className="mini-link" onClick={() => setCols(new Set(allCols))}>all</a>
-            {" / "}<a className="mini-link" onClick={() => setCols(new Set())}>none</a>
-          </div>
-          {allCols.map((c) => (
-            <label key={c} style={{ display: "inline-flex", gap: 4, marginRight: 8 }}>
-              <input type="checkbox" checked={cols.has(c)} onChange={() => toggle(cols, c, setCols)} />{c}
-            </label>
-          ))}
-        </div>
-        <div>
-          <label>Blocking columns (optional)</label>
-          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
-            Performance only: rows are bucketed by these columns and only compared
-            within a bucket. Use at &lt;100% on large data; leave empty for exact match.
-            {" "}<a className="mini-link" onClick={() => setBlocking(new Set(allCols))}>all</a>
-            {" / "}<a className="mini-link" onClick={() => setBlocking(new Set())}>none</a>
-          </div>
-          {allCols.map((c) => (
-            <label key={c} style={{ display: "inline-flex", gap: 4, marginRight: 8 }}>
-              <input type="checkbox" checked={blocking.has(c)} onChange={() => toggle(blocking, c, setBlocking)} />{c}
-            </label>
-          ))}
-        </div>
+      <h2 style={{ fontSize: "0.95rem" }}>Whole-row duplicates</h2>
+      <div className="row" style={{ alignItems: "flex-end" }}>
         <div>
           <label>Min match threshold</label>
           <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
-            100% = exact duplicates; 90/80% = near-duplicates (typo-tolerant).
+            Rows are compared on every column — 100% = identical; 90/80% = near-identical (typo-tolerant).
           </div>
           <select value={threshold} onChange={(e) => setThreshold(Number(e.target.value))}>
             {[100, 90, 80].map((t) => <option key={t} value={t}>{t}%</option>)}
           </select>
         </div>
-      </div>
-      <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-        <button onClick={estimate} disabled={cols.size === 0}>Estimate candidate pairs</button>
-        <button className="primary" onClick={analyze} disabled={cols.size === 0 || est?.blocked}>
-          Run analysis
-        </button>
+        <div>
+          <button className="primary" onClick={() => run({ columns: allCols, blocking_columns: [], threshold, tag: "rows" })}
+            disabled={allCols.length === 0}>
+            Run analysis
+          </button>
+        </div>
         {progress && <span className="muted">{progress}</span>}
       </div>
-      {est && (
-        <div className={est.blocked ? "error" : est.warning ? "notice" : "muted"} style={{ marginTop: 8 }}>
-          ~{est.candidate_pairs.toLocaleString()} candidate pairs ({est.basis}).
-          Attainable match percentages: {est.attainable_pcts.join("%, ")}%.
-          {est.blocked && " Blocked: reduce comparison columns or add blocking columns."}
-          {est.warning && !est.blocked && " Warning: this may take a while."}
-        </div>
-      )}
       {err && <div className="error">{err}</div>}
 
-      {result && result.mode === "exact" && (
-        <div style={{ marginTop: 14 }}>
-          <h2 style={{ fontSize: "0.95rem" }}>
-            {result.summary.duplicate_groups} exact-duplicate groups · {result.summary.affected_rows} rows affected
-          </h2>
-          {result.groups.slice(0, 50).map((g: any, i: number) => (
-            <div key={i} className="muted" style={{ marginBottom: 6 }}>
-              Rows {g.members.join(", ")} (100% match)
-              <select
-                style={{ marginLeft: 8 }}
-                onChange={(e) => setDecisions({ ...decisions, [JSON.stringify(g.members)]: { action: e.target.value } })}
-              >
-                <option value="">choose action…</option>
-                <option value="keep_all">keep all</option>
-                <option value="keep_first">keep first</option>
-                <option value="keep_last">keep last</option>
-                <option value="keep_most_complete">keep most complete</option>
-              </select>
-            </div>
-          ))}
+      {rowResult?.mode === "blocked" && (
+        <div className="error" style={{ marginTop: 8 }}>
+          Too many rows to compare at {rowResult.threshold}% on this dataset. Try a key-column check below.
         </div>
       )}
-
-      {result && result.mode === "near" && (
+      {rowResult?.mode === "exact" && exactGroups(rowResult, "exact-duplicate groups")}
+      {rowResult?.mode === "near" && (
         <div style={{ marginTop: 14 }}>
           <h2 style={{ fontSize: "0.95rem" }}>
-            {result.summary.clusters} near-duplicate clusters · {result.summary.qualifying_pairs} qualifying pairs
+            {rowResult.summary.clusters} near-duplicate clusters · {rowResult.summary.qualifying_pairs} qualifying pairs
           </h2>
           <p className="muted">
             Each cluster is anchored to a representative record; member scores are vs. the representative;
             members are not guaranteed to match each other.
           </p>
-          {result.clusters.slice(0, 30).map((c: any, i: number) => (
+          {rowResult.clusters.slice(0, 30).map((c: any, i: number) => (
             <div key={i} className="muted" style={{ marginBottom: 6 }}>
               Rep row {c.representative_row_id}:{" "}
               {c.members.map((m: any) => `row ${m.row_id} (${m.score_pct}%)`).join(", ")}
@@ -1135,7 +1360,33 @@ function Duplicates({ item, onChanged, refresh = 0 }: { item: ProjectItem; onCha
         </div>
       )}
 
-      {result && result.mode === "blocked" && <div className="error">{result.reason}</div>}
+      <h2 style={{ fontSize: "0.95rem", marginTop: 22 }}>Key-column duplicates</h2>
+      <div className="row" style={{ alignItems: "flex-end" }}>
+        <div>
+          <label>Key column</label>
+          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
+            Rows sharing the same value in this column get grouped — e.g. repeated IDs.
+          </div>
+          <select value={keyCol} onChange={(e) => setKeyCol(e.target.value)}>
+            <option value="">choose column…</option>
+            {allCols.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <button className="primary" onClick={() => run({ columns: [keyCol], blocking_columns: [], threshold: 100, tag: "key" })}
+            disabled={!keyCol}>
+            Find duplicates
+          </button>
+        </div>
+      </div>
+      {keyResult?.mode === "exact" && (
+        <div>
+          <div className="muted" style={{ marginTop: 10 }}>
+            Duplicate values in <strong>{keyResult.columns?.[0]}</strong>
+          </div>
+          {exactGroups(keyResult, "duplicate-key groups")}
+        </div>
+      )}
 
       {Object.keys(decisions).length > 0 && (
         <button className="primary" style={{ marginTop: 10 }} onClick={resolve}>

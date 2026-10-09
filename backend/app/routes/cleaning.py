@@ -4,7 +4,7 @@ import polars as pl
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..analysis import basic, keys, missingness, normalize, patterns, special_chars, typing as type_analysis, units
+from ..analysis import basic, keys, missingness, normalize, patterns, profile, special_chars, typing as type_analysis, units
 from ..duplicates import (
     analyze_duplicates,
     completeness,
@@ -55,6 +55,13 @@ def _cached_assess(project: Project, item_id: str, stage: str, fn):
 # ---------------------------------------------------------------------------
 # Assessments (read-only; never mutate)
 # ---------------------------------------------------------------------------
+
+
+@router.get("/assess/profile")
+def assess_profile(item_id: str, session: Session = Depends(require_session)):
+    project, _item = _project_item(session, item_id)
+    return _cached_assess(project, item_id, "profile",
+                          lambda: profile.assess_profile(_working_df(project, item_id)))
 
 
 @router.get("/assess/special-chars")
@@ -247,6 +254,7 @@ class DupConfig(BaseModel):
     columns: list[str]
     blocking_columns: list[str] = []
     threshold: int = 100
+    tag: str | None = None
 
 
 def _dup_cfg_valid(df: pl.DataFrame, cfg: DupConfig) -> None:
@@ -273,6 +281,7 @@ def _run_duplicate_analysis(job: Job, session: Session, item_id: str, cfg: dict)
     result = analyze_duplicates(
         df, cfg["columns"], cfg.get("blocking_columns", []), cfg["threshold"], job=job
     )
+    result["tag"] = cfg.get("tag")
     save_result(project.item_dir(item_id), result)
     project.set_stage_state(item_id, Stage.DUPLICATES, "in_progress")
     return result.get("summary", {})

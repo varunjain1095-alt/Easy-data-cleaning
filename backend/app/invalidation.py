@@ -10,6 +10,7 @@ from .opspec import Stage
 # stage that changed -> dependent results invalidated
 DEPENDENCY_MAP: dict[str, set[str]] = {
     Stage.SPECIAL_CHARS: {
+        Stage.PROFILE,
         Stage.MISSINGNESS,
         Stage.UNITS,
         Stage.TYPES,
@@ -24,6 +25,7 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.MISSINGNESS: {
+        Stage.PROFILE,
         Stage.UNITS,
         Stage.TYPES,
         Stage.NORMALIZATION,
@@ -36,6 +38,7 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.UNITS: {
+        Stage.PROFILE,
         Stage.TYPES,
         Stage.NORMALIZATION,
         Stage.INVALID_VALUES,
@@ -46,6 +49,7 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.TYPES: {
+        Stage.PROFILE,
         Stage.NORMALIZATION,
         Stage.INVALID_VALUES,
         Stage.PATTERNS,
@@ -57,6 +61,7 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.NORMALIZATION: {
+        Stage.PROFILE,
         Stage.MISSINGNESS,
         Stage.INVALID_VALUES,
         Stage.PATTERNS,
@@ -66,6 +71,7 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
     },
     Stage.COLUMN_NAMES: set(),  # column references remapped when unambiguous; else flagged for review
     Stage.INVALID_VALUES: {
+        Stage.PROFILE,
         Stage.MISSINGNESS,
         Stage.PATTERNS,
         Stage.STATISTICS,
@@ -76,6 +82,7 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.STRUCTURES: {
+        Stage.PROFILE,
         Stage.DUPLICATES,
         Stage.KEYS,
         Stage.STATISTICS,
@@ -84,12 +91,14 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.PATTERNS: {
+        Stage.PROFILE,
         Stage.DUPLICATES,
         Stage.KEYS,
         Stage.STATISTICS,
         Stage.VALIDATION,
     },
     Stage.DUPLICATES: {
+        Stage.PROFILE,
         Stage.KEYS,
         Stage.STATISTICS,
         Stage.UNIVARIATE,
@@ -97,12 +106,14 @@ DEPENDENCY_MAP: dict[str, set[str]] = {
         Stage.VALIDATION,
     },
     Stage.KEYS: {
+        Stage.PROFILE,
         Stage.STATISTICS,
         Stage.VALIDATION,
     },
     Stage.OUTCOME: set(),  # invalidates outcome-focused bivariate results only, handled via flag
     Stage.UNIVARIATE: set(),
     Stage.BIVARIATE: {
+        Stage.PROFILE,
         Stage.STATISTICS,
         Stage.VALIDATION,
     },
